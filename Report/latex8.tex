@@ -1,0 +1,273 @@
+
+%
+%  $Description: Author guidelines and sample document in LaTeX 2.09$ 
+%
+%  $Author: ienne $
+%  $Date: 1995/09/15 15:20:59 $
+%  $Revision: 1.4 $
+%
+
+\documentclass[times, 10pt,twocolumn]{article} 
+\usepackage{latex8}
+\usepackage{times}
+\usepackage[noend,linesnumbered,ruled]{algorithm2e}
+\usepackage[utf8]{inputenc}
+
+%\documentstyle[times,art10,twocolumn,latex8]{article}
+
+% Pseudocode customization begins here
+\SetKwFunction{sleep}{sleep}
+\SetKwFunction{calcstate}{calculate\_state}
+\SetKwFunction{broadcast}{broadcast}
+\SetKwFunction{successor}{is\_successor}
+\SetKwFunction{deliver}{deliver}
+\SetKwFunction{finaldeliver}{final\_deliver}
+% Pseudocode customization ends here
+
+%------------------------------------------------------------------------- 
+% take the % away on next line to produce the final camera-ready version 
+\pagestyle{empty}
+
+%------------------------------------------------------------------------- 
+\begin{document}
+
+\title{DAD-OGP}
+
+\author{Tomás Cunha\\
+81201\\ tomas.cunha@tecnico.ulisboa.pt\\
+% For a paper whose authors are all at the same institution, 
+% omit the following lines up until the closing ``}''.
+% Additional authors and addresses can be added with ``\and'', 
+% just like the second author.
+\and
+Guilherme Santos\\
+81209\\
+guilherme.j.santos@tecnico.ulisboa.pt\\
+}
+
+\maketitle
+\thispagestyle{empty}
+
+\begin{abstract}
+   In modern society, online games have become more and more
+   common. In this paper, we introduced a solution for easily
+   creating fault-tolerant distributed games in semi-synchronous
+   environments (synchronous between servers, asynchronous
+   between clients).
+   Game clients employ a prediction mechanism to mask delays
+   in the server.
+   The server may be replicated across an arbitrary number of
+   replicas that take its place when a failure is detected.
+\end{abstract}
+
+
+
+%------------------------------------------------------------------------- 
+\Section{Introduction}
+
+With the advent of the internet, multiplayer games
+are becoming mainstream. With this in mind, it is important
+to design solutions that minimize latency and tolerate faults
+so that the player cannot perceive any downtime in the servers.
+
+It is also desirable for the players to communicate with each other
+during the course of a game. This means that message order causality must
+also be taken into account.
+
+%------------------------------------------------------------------------- 
+\Section{Overview}
+
+Our system is based on an abstract server class that employs a round-based
+approach to the game cycle. This abstract server implements the communication
+logic; every time a new game needs to be added, the developer only needs to
+subclass this abstract server and implement the game-specific domain logic.
+
+The same approach is taken on the client: we have an abstract class implementing
+the communication logic, and developers wanting to support a new game need only
+to implement the game-specific logic.
+
+%------------------------------------------------------------------------- 
+\SubSection{Main Game Loop}
+
+At the start of the game, the server waits for all the players
+to connect. When a player connects, the server contacts all
+currently connected players and announces the new player to them;
+this is because players need to know every other player in order
+to communicate with them (the chat is implemented in a peer-to-peer
+fashion).
+
+When all players have connected, the server calculates the initial
+state and sends it to all players.
+
+At this point, the server enters a loop until the game is over. In this
+loop, it gathers inputs from the clients, calculates states according to
+these inputs, and then sleeps for some amount of time (this time is configured
+when the server is started, and corresponds to the round time).
+
+This loop may be represented in pseudocode as follows:
+
+\begin{algorithm}[h]
+    \While{running}{
+      \sleep{ROUND\_TIME}\;
+      \calcstate{}\;
+      round\_time := round\_time + 1\;
+      \broadcast{state, clients}\;
+    }
+
+    \caption{Main game loop}
+\end{algorithm}
+
+Out of the functions used in this loop, only \(\textbf{calculate\_state}\) needs
+to be implemented by the specific game servers. This massively simplifies
+the creation of new games, since the load of managing the distributed side
+of the application is taken care of by our abstract class.
+
+%------------------------------------------------------------------------- 
+\SubSection{Client-side Overview}
+
+Similarly to the server, there is one abstract class representing a client.
+This class uses several abstractions to help make it more extensible. All
+the logic for processing received states and sending inputs to the server is
+done in this superclass; subclasses need only to implement the logic for
+drawing the game board on the screen, based on the states that they receive.
+
+This means that, just like in the server's case, the creation of new types
+of games is simple: a developer meaning to create a client for a new type
+of game only needs to worry about what sprites to draw in the positions
+given to it by the server; anything else is already handled by the abstract
+client.
+
+Additionally, the abstract client class takes of care of receiving and sending
+chat messages in causal order, meaning that if a message was sent after another
+message was received, these two messages will never be received in the wrong
+order by a third party who receives both of them (see \ref{chatorder}).
+
+
+%------------------------------------------------------------------------- 
+\Section{Client side concerns}
+%------------------------------------------------------------------------- 
+\SubSection{Chat message ordering}
+\label{chatorder}
+
+To implement causal ordering, we used an implementation of vector clocks as
+timestamps to order messages, as described in \cite{timestamps}.
+
+Since the number of clients in our system is known at the start of the game,
+each client can create and zero-initialize a vector of scalar timestamps that
+is used to order every message that is received. The implementation can be
+summarized in the following pseudocode:
+
+\begin{algorithm}[h]
+  \If{\successor{m.clock, i.clock}}{
+    \deliver{m}\;
+  }
+  \Else{
+    queued\_messages := queued\_messages $\cup$ \{m\}\;
+  }
+
+  \caption{When message $m$ is received by client $i$}
+\end{algorithm}
+
+In the above pseudocode, a message's clock is considered to be
+the successor of the client's successor if, for every timestamp except
+for the one of the client that sent that message, the client's timestamp is
+greater than or equal to that timestamp, and if the message's timestamp
+for the client that sent it is the successor to the corresponding timestamp
+on the receiving client's clock.
+
+\begin{algorithm}[h]
+  \finaldeliver{m}\;
+  to\_send := $\O$\;
+  \ForEach{m $\in$ queued\_messages}{
+    \If{\successor{m.clock, i.clock}}{
+      to\_send := to\_send $\cup$ \{m\}\;
+      queued\_messages := queued\_messages $\setminus$ \{m\}\;
+    }
+  }
+  \ForEach{m $\in$ to\_send}{
+    \deliver{m}\;
+  }
+
+  \caption{When message $m$ is delivered to client $i$}
+\end{algorithm}
+
+With these algorithms, we ensure that there will always be a causal ordering
+between messages; if a message $m_2$ depends on a message $m_1$, then all
+clients will receive $m_1$ before they receive $m_2$.
+
+%------------------------------------------------------------------------ 
+\SubSection{State Prediction}
+
+In order to mask away delays in the network between the server and the
+client, we employ a prediction mechanism in the client. After a certain
+amount of rounds, if the client hasn't received the next state from the
+server, it will use the current state it has to simulate the next state.
+When the server's state reaches the client, the calculated state will be
+corrected if need be.
+
+This way, if the messages between the server and the client suffer some
+temporary delay, the user will not immediately perceive this, as the
+next state will be calculated on the client's side. Of course, the client
+can't guess what movements the remaining players made without the server
+telling it, so it might mispredict what the real state actually is.
+This misprediction is corrected when the state updates the client with
+the real state, but at least the client doesn't see a frozen screen
+during this delayed period.
+
+This was done by moving the state calculation logic into the game state class
+that is shared between the client and the server; the server is usually the
+one calling that calculation method, but if the client perceives a delay in
+the connection, it will use that method to keep calculating states.
+%------------------------------------------------------------------------- 
+\Section{Server side concerns}
+%------------------------------------------------------------------------- 
+\SubSection{Replication}
+In order to ensure that the game keeps going in case of a server failure,
+we needed to decide on a replication protocol.
+
+We had several alternatives; one of those would be to use active replication:
+every round, the clients would gather states from a majority of replicas and
+then draw the state. This solution, however, was not the best for our purposes
+for a few reasons:
+\begin{itemize}
+  \item the client would need to be aware of all the replicas, which
+        would introduce some additional unnecessary complexity and overhead.
+  \item the client would also need to wait for a majority of responses from the
+        servers before drawing the new state, which might be too slow for our
+        purposes (since latency is also a concern in this system)
+\end{itemize}
+
+For these reasons, active replication was not the correct option, so we opted
+for passive replication.
+
+By assuming that the system is synchronous between servers, the problem is
+simplified. This assumption is not far-fetched, given the strict time constraints
+that game servers are supposed to satisfy. If we assume this, perfect fault
+detection is possible: the server maintains a list of replicas, and periodically
+send them a message informing them that it is still alive. Whenever there's a
+state update, it sends it to all the replicas as well. When the server fails, the
+replicas elect a new primary server. Repeat this process until there are no
+replicas left. Using this protocol, if we have $f$ replicas (including the
+primary server), we can tolerate \(f - 1\) faults.
+
+The only remaining problem, then, is electing a new primary server. This is
+trivial, in this case: we can just assign a unique id to each replica (for
+example, the IP address and port of that particular replica), and
+order the list by that id; then, when a failure is detected, the first
+element of that list is selected as the new primary server. If that replica
+also failed, it is okay, as this fault will also be quickly detected and the
+next one on the list will become the leader.
+%------------------------------------------------------------------------- 
+\Section{Conclusion}
+
+In a multiplayer game environment, it is of the utmost importance to
+reduce latency while preventing the game from being interrupted by a
+failure on the server's side. Our proposed solution takes care of the
+latter without compromising the former, by employing passive replication
+on the server's side along with prediction mechanisms on the client's
+side.
+%------------------------------------------------------------------------- 
+\bibliographystyle{latex8}
+\bibliography{latex8}
+
+\end{document}
